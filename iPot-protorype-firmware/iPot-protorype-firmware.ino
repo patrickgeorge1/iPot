@@ -200,6 +200,7 @@ void loop()
   
   
   // BUZZER CONTROL
-  //playMelody__errorMode();
+  playMelody__errorMode();
+  playMelody__irrigationStarted();
   delay(50000000);
 }
