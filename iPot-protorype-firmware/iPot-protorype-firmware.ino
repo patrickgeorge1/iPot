@@ -1,22 +1,36 @@
-/*
+/*                               COOL STUFF USED
  *  Play music with arduino: https://dragaosemchama.com/en/2019/02/songs-for-arduino/ 
  *  
 **/
 
-/////////////////////// Set-up  ///////////////////////
 
+
+
+
+
+//------------------                 SET UP                  ----------------------//
 #define WATER_PUMP 3
 #define BUZZER 6
 #define TOP_SHS A0
+#define MID_SHS A1
+#define BOTTOM_SHS A2
 
 void setup()
 {
   pinMode(WATER_PUMP, OUTPUT);
   pinMode(BUZZER, OUTPUT);
+  digitalWrite(BUZZER, HIGH);  // buzzer is low triggered
+
   Serial.begin(9600);
 }
 
-////////////////// Play music logic ///////////////////
+
+
+
+
+
+
+//------------------             PLAY MUSIC LOGIC            ----------------------//
 // ref: https://github.com/robsoncouto/arduino-songs
 
 #define NOTE_B0  31
@@ -116,7 +130,7 @@ void setup()
  * recommanded tempo = 140, change it to modify song speed
  * isBuzzerTriggeredLow - specifies buzzer trigger type
 **/
-void playMelody(uint8_t passive_buzzer_pin, int melody[], int notes, int tempo, bool isBuzzerTriggerLow) {
+void playMelody(uint8_t passive_buzzer_pin, const int melody[], const int notes, const int tempo, bool isBuzzerTriggerLow) {
   int wholenote = (60000 * 2) / tempo;
   int divider = 0, noteDuration = 0;
 
@@ -182,25 +196,143 @@ void playMelody__errorMode() {
    
 }
 
-///////////////////// Arduino logic //////////////////////
 
 
-int top_humidity;
+
+
+
+//------------------       MEASURING THE SOIL VOLUMETRIC WATER       ----------------------//
+#define WATER_IRRIGATION_PERCENT_THRESHOLD 50
+#define WATER_IRRIGATION_DURATION_MILLIS 2500
+#define WATER_IRRIGATION_TAKE_EFFECT_TIME 5000
+
+// Read and map soil humidity sensors
+void measureSoilHumidity(int *top_level_humidity, int *mid_level_humidity, int *bottom_level_humidity) {
+  int top_sum = 0, mid_sum = 0, bot_sum = 0;
+  
+  for (int i = 0; i < 99; i++) {
+    // calibration needed
+    top_sum += cap(map(map(analogRead(TOP_SHS), 1023, 0, 0, 100), 0, 60, 0, 100), 100);
+    mid_sum += cap(map(map(analogRead(MID_SHS), 1023, 0, 0, 100), 0, 60, 0, 100), 100);
+    bot_sum += cap(map(map(analogRead(BOTTOM_SHS), 1023, 0, 0, 100), 0, 60, 0, 100), 100);
+    delay(20);
+  }
+    (*top_level_humidity) = top_sum / 100;
+    (*mid_level_humidity) = mid_sum / 100;
+    (*bottom_level_humidity) = bot_sum / 100;
+
+}
+
+// Compute the overall soil volumetric water procent
+void computeSoilVolumetricWater(int *soil_volumetric_water, int *top_level_humidity, int *mid_level_humidity, int *bottom_level_humidity) {
+  /*
+  *  wa = weight in average
+  *  top_level_humidity - 15% wa
+  *  mid_level_humidity - 60% wa
+  *  bottom_level_humidity - 25% wa
+  **/
+  (*soil_volumetric_water) = (15 * (*top_level_humidity) + 60 * (*mid_level_humidity) + 25 * (*bottom_level_humidity)) / 100;
+}
+
+
+
+
+
+
+//------------------       IRRIGATION TOOLS       ----------------------//
+#define WATER_IRRIGATION_PERCENT_THRESHOLD 50
+#define WATER_IRRIGATION_DURATION_MILLIS 2500
+#define WATER_IRRIGATION_TAKE_EFFECT_TIME 5000
+
+/*
+ *  Infinite error state. Error sound played. 
+ * To EXIT this mode:  restart the board
+**/
+void errorMode() {
+  do {
+    playMelody__errorMode();
+    delay(2000);
+  } while(1);
+}
+
+void startWaterPump() {
+  digitalWrite(WATER_PUMP, HIGH);
+}
+
+void stopWaterPump() {
+  digitalWrite(WATER_PUMP, LOW);
+}
+
+int cap(int value, int max) {
+  return (value > max)  ? max : value;
+}
+
+// water the plant for periodOfTime millis
+void irrigatePlantForTimePeriod(int periodOfTime) {
+  startWaterPump();
+  delay(periodOfTime);
+  stopWaterPump();  
+}
+
+
+
+
+
+
+
+
+//------------------      ARDUINO LOGIC      ----------------------//
 void loop()
 {
-  // SOIL HUMIDITY READ
-  Serial.println(analogRead(TOP_SHS));
+  // SOIL HUMIDITY ANALYSIS
+  int top_level_humidity = 0;
+  int mid_level_humidity = 0;
+  int bottom_level_humidity = 0;
+  int soil_volumetric_water = 0;
+  measureSoilHumidity(&top_level_humidity, &mid_level_humidity, &bottom_level_humidity);
+  computeSoilVolumetricWater(&soil_volumetric_water, &top_level_humidity, &mid_level_humidity, &bottom_level_humidity);
+  
+  // human debugging
+  Serial.print(top_level_humidity);
+  Serial.print(", ");
+  Serial.print(mid_level_humidity);
+  Serial.print(", ");
+  Serial.print(bottom_level_humidity);
+  Serial.print("  =>  ");
+  Serial.println(soil_volumetric_water);  
 
   
-  // WATER PUMP CONTROL
-  digitalWrite(WATER_PUMP, HIGH);
-  delay(1000);
-  digitalWrite(WATER_PUMP, LOW);
-  delay(1000);
-  
-  
-  // BUZZER CONTROL
-  playMelody__errorMode();
-  playMelody__irrigationStarted();
-  delay(50000000);
+  // decide if the plant need to be irrigated
+  if (soil_volumetric_water < WATER_IRRIGATION_PERCENT_THRESHOLD) {
+
+    // annonce irrigation start
+    int wateredPot_soil_volumetric_water = 0;
+    playMelody__irrigationStarted();
+    Serial.println("The plant needs water");  
+
+    // irrigate in cycles, until soil volumetric water is ok
+    while (wateredPot_soil_volumetric_water < WATER_IRRIGATION_PERCENT_THRESHOLD) {
+
+      // try a maximum of 10 times to complete current irrigation cycle
+      bool irrigationCycleComplete = false;
+      for (int try_number = 1; try_number < 10 && !irrigationCycleComplete; try_number++) {
+
+        // START WATERING for a little time and after that wait until water settles
+        irrigatePlantForTimePeriod(WATER_IRRIGATION_DURATION_MILLIS);
+        delay(WATER_IRRIGATION_TAKE_EFFECT_TIME);
+
+        // measure the new soil volumetric water
+        measureSoilHumidity(&top_level_humidity, &mid_level_humidity, &bottom_level_humidity);
+        computeSoilVolumetricWater(&wateredPot_soil_volumetric_water, &top_level_humidity, &mid_level_humidity, &bottom_level_humidity);
+
+        // check if water reached the pot
+        if(soil_volumetric_water < wateredPot_soil_volumetric_water) irrigationCycleComplete = true;
+      }           
+
+      // irrigation cycle failed, human maintenance needed (no water in reservoir)
+      if(!irrigationCycleComplete) errorMode();
+    }
+    
+  } // plant has enough water, check 5 min later
+  else delay(300000);
 }
